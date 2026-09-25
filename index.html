@@ -80,7 +80,7 @@
       <button id="btn-extract" disabled>
         <span id="btn-spinner" class="spinner" style="display:none;"></span>
         <span id="btn-icon">⚡</span>
-        <span id="btn-label">Extract Selected Resume</span>
+        <span id="btn-label">Extract & Summarize Resume</span>
       </button>
       <button id="btn-extract-all" class="secondary">
         <span>🔄</span> Extract All Pending Resumes
@@ -113,34 +113,216 @@
       if (!text) return '';
       text = text.replace(/\uf0b7/g, '- ').replace(/\u2022/g, '- ').replace(/\uf0a7/g, '- ');
       text = text.replace(/\xa0/g, ' ').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-      const lines = text.split('\n').map(l => l.replace(/[ \t]+/g, ' ').trim());
-      const reconstructed = [];
-      let currentItem = [];
+      const lines = text.split('\n');
+      const cleaned = [];
 
-      for (const line of lines) {
+      for (let line of lines) {
+        line = line.replace(/[ \t]+/g, ' ').trim();
         if (!line) {
-          if (currentItem.length) {
-            reconstructed.push(currentItem.join(' '));
-            currentItem = [];
+          if (cleaned.length && cleaned[cleaned.length - 1] !== '') {
+            cleaned.push('');
           }
-          reconstructed.push('');
           continue;
         }
-        const isBullet = /^[-*•●▪■]\s+/.test(line);
-        const isHeading = /^[A-Z\s]{4,35}$/.test(line);
+        if (/^[-*•●▪■]\s+/.test(line)) {
+          line = line.replace(/^[-*•●▪■]\s*/, '- ');
+        }
+        cleaned.push(line);
+      }
+      return cleaned.join('\n').trim();
+    }
 
-        if (isBullet || isHeading || !currentItem.length) {
-          if (currentItem.length) {
-            reconstructed.push(currentItem.join(' '));
-            currentItem = [];
+    function generateMarkdownSummary(cleanedText) {
+      if (!cleanedText || cleanedText.trim().length < 40) {
+        return '- **Notice**: Resume text is insufficient or could not be extracted.';
+      }
+
+      const lines = cleanedText.split('\n').map(l => l.trim()).filter(Boolean);
+      const headerPatterns = [
+        ['summary', /^(profile\s+summary|professional\s+summary|career\s+objective|professional\s+profile|executive\s+summary|summary|about\s+me)\b/i],
+        ['skills', /^(core\s+strengths|core\s+competencies|key\s+skills|technical\s+skills|skills\s*&?\s*abilities|skills|areas\s+of\s+expertise|areas\s+of\s+specialization)\b/i],
+        ['experience', /^(professional\s+experience|work\s+experience|employment\s+history|experience|career\s+history|work\s+history)\b/i],
+        ['education', /^(education|academic\s+background|educational\s+background|education\s*&?\s*credentials)\b/i],
+        ['certifications', /^(certifications?|licenses?\s*&?\s*certifications?|trainings?\s*&?\s*certifications?|credentials)\b/i],
+        ['achievements', /^(key\s+projects|projects|achievements|notable\s+achievements|honors\s*&?\s*awards|awards)\b/i]
+      ];
+
+      const sections = { header: [] };
+      let currentSec = 'header';
+
+      for (const line of lines) {
+        let matched = false;
+        const lower = line.toLowerCase().replace(/[:\s]+$/, '');
+        if (lower.length < 45) {
+          for (const [secName, pat] of headerPatterns) {
+            if (pat.test(lower)) {
+              currentSec = secName;
+              if (!sections[currentSec]) sections[currentSec] = [];
+              matched = true;
+              break;
+            }
           }
-          currentItem.push(line);
-        } else {
-          currentItem.push(line);
+        }
+        if (!matched) {
+          if (!sections[currentSec]) sections[currentSec] = [];
+          sections[currentSec].push(line);
         }
       }
-      if (currentItem.length) reconstructed.push(currentItem.join(' '));
-      return reconstructed.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+      const bullets = [];
+
+      // 1. Professional Overview (1 bullet)
+      if (sections.summary && sections.summary.length) {
+        const sumText = sections.summary.join(' ').replace(/\s+/g, ' ').trim();
+        const sentences = sumText.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(s => s.length > 20);
+        if (sentences.length) {
+          let sOut = sentences[0];
+          if (sOut.length > 220) sOut = sOut.substring(0, 217).replace(/\s+\S*$/, '') + '...';
+          if (!sOut.endsWith('.')) sOut += '.';
+          bullets.push(`- **Professional Overview**: ${sOut}`);
+        }
+      }
+
+      // 2. Key Skills (1 bullet)
+      if (sections.skills && sections.skills.length) {
+        const skillText = sections.skills.join(' ');
+        const rawSkills = skillText.split(/[|•,\t\n\r]|(?:\s+-\s+)/);
+        const cleanedSkills = [];
+        const seen = new Set();
+        for (let s of rawSkills) {
+          s = s.replace(/^[-*•●▪■\s]+/, '').trim();
+          if (s.length > 2 && s.length < 45 && !seen.has(s.toLowerCase())) {
+            if (!/\b(email|phone|linkedin|address|curriculum|resume)\b/i.test(s)) {
+              seen.add(s.toLowerCase());
+              cleanedSkills.push(s);
+            }
+          }
+          if (cleanedSkills.length >= 8) break;
+        }
+        if (cleanedSkills.length) {
+          bullets.push(`- **Core Skills & Strengths**: ${cleanedSkills.join(', ')}.`);
+        }
+      }
+
+      // 3. Work Experience (2-3 bullets)
+      const dateRegex = /(?:\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{4}|\b\d{4})\s*(?:–|-|to)\s*(?:\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{4}|\b\d{4}|Present|Current)/i;
+
+      if (sections.experience && sections.experience.length) {
+        const expLines = sections.experience;
+        const roles = [];
+        let currentRole = null;
+
+        for (const l of expLines) {
+          const dMatch = l.match(dateRegex);
+          const isBullet = l.startsWith('-') || l.startsWith('•') || l.startsWith('*');
+          const isHeading = !isBullet && (dMatch !== null || /^[A-Z0-9\s,\.\-&/]{4,70}$/.test(l));
+
+          if (isHeading) {
+            if (currentRole && (currentRole.title || currentRole.bullets.length)) {
+              roles.append ? roles.append(currentRole) : roles.push(currentRole);
+            }
+            currentRole = { title: l, date: dMatch ? dMatch[0] : '', bullets: [] };
+          } else if (currentRole) {
+            if (!currentRole.date && dMatch) currentRole.date = dMatch[0];
+            const bulletClean = l.replace(/^[-*•●▪■\s]+/, '').trim();
+            if (bulletClean.length > 15 && !dateRegex.test(bulletClean)) {
+              currentRole.bullets.push(bulletClean);
+            }
+          }
+        }
+        if (currentRole && (currentRole.title || currentRole.bullets.length)) {
+          roles.push(currentRole);
+        }
+
+        for (let idx = 0; idx < Math.min(roles.length, 3); idx++) {
+          const r = roles[idx];
+          let titleClean = r.title.replace(dateRegex, '').replace(/[ |–-:.,]+$/, '').replace(/\s+/g, ' ').trim();
+          const dateStr = r.date ? ` (${r.date})` : '';
+          const duties = r.bullets;
+          let dutyStr = '';
+          if (duties.length) {
+            const topDuties = duties.slice(0, 2);
+            dutyStr = ' — ' + topDuties.join('; ');
+            if (dutyStr.length > 170) dutyStr = dutyStr.substring(0, 167).replace(/\s+\S*$/, '') + '...';
+          }
+          const label = idx === 0 ? 'Recent Experience' : (idx === 1 ? 'Prior Experience' : 'Career Progression');
+          bullets.push(`- **${label}**: ${titleClean}${dateStr}${dutyStr}.`);
+        }
+
+        if (!roles.length && expLines.length) {
+          const expTextItems = expLines.map(l => l.replace(/^[-*•●▪■\s]+/, '').trim()).filter(l => l.length > 15);
+          if (expTextItems.length >= 2) {
+            bullets.push(`- **Work Experience**: ${expTextItems[0].replace(/\.+$/, '')}.`);
+            bullets.push(`- **Key Responsibilities**: ${expTextItems[1].replace(/\.+$/, '')}.`);
+          } else if (expTextItems.length) {
+            bullets.push(`- **Work Experience**: ${expTextItems[0].replace(/\.+$/, '')}.`);
+          }
+        }
+      }
+
+      // 4. Education (1 bullet, preserving completed vs. in-progress)
+      if (sections.education && sections.education.length) {
+        const eduLines = sections.education;
+        const eduItems = [];
+        for (const l of eduLines) {
+          const lc = l.replace(/^[-*•●▪■\s]+/, '').trim();
+          if (/bachelor|master|doctor|bs|ba|college|university|secondary|degree|diploma|school/i.test(lc)) {
+            let statusNote = '';
+            if (/in progress|ongoing|candidate|expected|currently pursuing/i.test(lc)) {
+              statusNote = ' [In Progress]';
+            } else if (/graduated|completed|attained/i.test(lc)) {
+              statusNote = ' [Completed]';
+            }
+            eduItems.push(lc + statusNote);
+          }
+        }
+        if (eduItems.length) {
+          bullets.push(`- **Education**: ${eduItems.slice(0, 2).join('; ')}.`);
+        }
+      }
+
+      // 5. Certifications (1 bullet)
+      if (sections.certifications && sections.certifications.length) {
+        const certLines = sections.certifications;
+        const certItems = [];
+        for (const l of certLines) {
+          const lc = l.replace(/^[-*•●▪■\s]+/, '').trim();
+          if (lc.length > 8) certItems.push(lc);
+          if (certItems.length >= 3) break;
+        }
+        if (certItems.length) {
+          bullets.push(`- **Certifications**: ${certItems.join('; ')}.`);
+        }
+      }
+
+      // 6. Notable Achievements / Projects (1 bullet)
+      if (sections.achievements && sections.achievements.length) {
+        const achLines = sections.achievements;
+        const achItems = [];
+        for (const l of achLines) {
+          let lc = l.replace(/^[-*•●▪■\s]+/, '').replace(/^[:\-\s]+/, '').trim();
+          if (lc.length > 10) achItems.push(lc);
+          if (achItems.length >= 3) break;
+        }
+        if (achItems.length) {
+          bullets.push(`- **Notable Achievements & Projects**: ${achItems.join('; ')}.`);
+        }
+      }
+
+      // Fallback if under 5 bullets
+      if (bullets.length < 5) {
+        for (const l of lines) {
+          if (l.length > 30 && !l.startsWith('#')) {
+            const bClean = l.replace(/^[-*•●▪■\s]+/, '').trim();
+            if (/\b(email|phone|linkedin|http|tel|mobile|github)\b/i.test(bClean)) continue;
+            if (bullets.some(b => b.toLowerCase().includes(bClean.substring(0, 25).toLowerCase()))) continue;
+            bullets.push(`- **Key Detail**: ${bClean}`);
+            if (bullets.length >= 5) break;
+          }
+        }
+      }
+
+      return bullets.slice(0, 8).join('\n');
     }
 
     function getAttachmentId(val) {
@@ -192,20 +374,38 @@
           ['UpdateRecord', 'Recruitment', rec.id, {
             Resume_Status: 'Scanned (OCR Needed)',
             Processed_Attachment_ID: attId,
-            Resume_Text: ''
+            Resume_Text: '',
+            Resume_Summary: '- **Status**: Scanned or image-only PDF detected. Selectable text unavailable (OCR required).'
           }]
         ]);
         return true;
       }
 
-      logStatus('Updating Grist table...', 'info');
+      logStatus('Analyzing resume and generating Markdown summary...', 'info');
+      const summary = generateMarkdownSummary(extractedText);
+
+      logStatus('Writing text and summary to Grist...', 'info');
       await grist.docApi.applyUserActions([
         ['UpdateRecord', 'Recruitment', rec.id, {
           Resume_Text: extractedText,
+          Resume_Summary: summary,
           Processed_Attachment_ID: attId,
           Resume_Status: 'Ready'
         }]
       ]);
+
+      // CRITICAL VERIFICATION: Verify the record in Grist actually contains the summary before returning success
+      logStatus('Verifying saved summary in Grist...', 'info');
+      const tableData = await grist.docApi.fetchTable('Recruitment');
+      const rowIdx = tableData.id.indexOf(rec.id);
+      if (rowIdx === -1) {
+        throw new Error('Record verification error: could not locate record after update.');
+      }
+      const verifiedSummary = tableData.Resume_Summary ? tableData.Resume_Summary[rowIdx] : '';
+      if (!verifiedSummary || !verifiedSummary.trim().startsWith('- ')) {
+        throw new Error('Verification failed: Resume_Summary is still empty. Ensure column is a writable Data column.');
+      }
+
       return true;
     }
 
@@ -219,7 +419,7 @@
       try {
         const ok = await processRecord(currentRecord);
         if (ok) {
-          logStatus('Done! Resume extracted and summary updated.', 'success');
+          logStatus('Done! Resume extracted and Markdown summary verified.', 'success');
         }
       } catch (err) {
         console.error(err);
@@ -228,7 +428,7 @@
         btnExtract.disabled = false;
         btnSpinner.style.display = 'none';
         btnIcon.style.display = 'inline';
-        btnLabel.textContent = 'Extract Selected Resume';
+        btnLabel.textContent = 'Extract & Summarize Resume';
       }
     });
 
@@ -249,16 +449,19 @@
           const processedId = table.Processed_Attachment_ID ? table.Processed_Attachment_ID[i] : null;
           const status = table.Resume_Status ? table.Resume_Status[i] : '';
           const text = table.Resume_Text ? table.Resume_Text[i] : '';
+          const summary = table.Resume_Summary ? table.Resume_Summary[i] : '';
 
           if (!attId) continue;
-          if (processedId === attId && status === 'Ready' && text) continue;
+          if (processedId === attId && status === 'Ready' && text && summary && summary.startsWith('- ')) {
+            continue;
+          }
 
           logStatus(`Processing ${name}...`, 'info');
           const rowObj = { id: rowId, Resume: resume, Name: name };
           await processRecord(rowObj);
           processed++;
         }
-        logStatus(`All done! Processed ${processed} candidate resume(s).`, 'success');
+        logStatus(`All done! Processed and verified ${processed} candidate resume(s).`, 'success');
       } catch (err) {
         console.error(err);
         logStatus('Batch error: ' + err.message, 'error');
