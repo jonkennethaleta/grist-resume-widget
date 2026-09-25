@@ -6,6 +6,7 @@
   <title>Grist Resume Summarizer Widget</title>
   <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <style>
     :root {
       --primary: #16a34a;
@@ -42,7 +43,7 @@
       outline: none;
       margin-bottom: 8px;
     }
-    select:focus { border-color: var(--primary); ring: 2px solid #86efac; }
+    select:focus { border-color: var(--primary); outline: 2px solid #86efac; }
     .candidate-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
     .badge-ready { background: var(--success-bg); color: var(--success-text); }
@@ -108,8 +109,8 @@
       </div>
 
       <div id="no-resume-alert" class="warning-box" style="display:none;">
-        ⚠️ <strong>No PDF resume uploaded yet.</strong><br/>
-        Please double-click the <em>Resume</em> cell for this candidate in the table to upload a PDF file.
+        ⚠️ <strong>No resume uploaded yet.</strong><br/>
+        Please double-click the <em>Resume</em> cell for this candidate in the table to upload a PDF or Word (.docx) document.
       </div>
     </div>
 
@@ -127,12 +128,14 @@
     <div id="status-area" class="status-msg status-info" style="display:none;"></div>
 
     <div class="tip-box">
-      💡 <strong>Tip:</strong> You can select candidates from the dropdown above, or click rows directly in Grist once cursor linking is active.
+      💡 <strong>Tip:</strong> Choose any candidate from the dropdown or click rows in the table. Both PDF (.pdf) and Word (.docx) formats are supported.
     </div>
   </div>
 
   <script>
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    if (typeof pdfjsLib !== 'undefined') {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
 
     let currentRecord = null;
     let allRecords = [];
@@ -178,7 +181,7 @@
 
     function generateMarkdownSummary(cleanedText) {
       if (!cleanedText || cleanedText.trim().length < 40) {
-        return '- **Notice**: Resume text is insufficient or could not be extracted.';
+        return '- **Notice**: Document text is insufficient or could not be extracted.';
       }
 
       const lines = cleanedText.split('\n').map(l => l.trim()).filter(Boolean);
@@ -224,6 +227,20 @@
           if (sOut.length > 220) sOut = sOut.substring(0, 217).replace(/\s+\S*$/, '') + '...';
           if (!sOut.endsWith('.')) sOut += '.';
           bullets.push(`- **Professional Overview**: ${sOut}`);
+        }
+      }
+
+      // Check for letter of intent subject / target role if summary wasn't found
+      if (!bullets.length) {
+        for (const l of lines) {
+          if (/\b(subject|application for|applying for|position of)\b/i.test(l)) {
+            let cleanSubj = l.replace(/^(subject\s*:\s*)/i, '').trim();
+            if (cleanSubj.length > 10) {
+              if (cleanSubj.length > 200) cleanSubj = cleanSubj.substring(0, 197).replace(/\s+\S*$/, '') + '...';
+              bullets.push(`- **Target Position & Role**: ${cleanSubj.replace(/\.+$/, '')}.`);
+              break;
+            }
+          }
         }
       }
 
@@ -304,13 +321,27 @@
         }
       }
 
+      // Narrative experience / skills search if formal sections weren't detected
+      if (bullets.length < 3) {
+        for (const l of lines) {
+          if (/\b(\d+\+?\s+years?|worked as|experience in|administrative officer|department head|manager|supervisor|analyst)\b/i.test(l)) {
+            let bClean = l.replace(/^[-*•●▪■\s]+/, '').trim();
+            if (!bullets.some(b => b.toLowerCase().includes(bClean.substring(0, 25).toLowerCase()))) {
+              if (bClean.length > 200) bClean = bClean.substring(0, 197).replace(/\s+\S*$/, '') + '...';
+              bullets.push(`- **Professional Background**: ${bClean.replace(/\.+$/, '')}.`);
+              if (bullets.length >= 4) break;
+            }
+          }
+        }
+      }
+
       // 4. Education (1 bullet, preserving completed vs. in-progress)
       if (sections.education && sections.education.length) {
         const eduLines = sections.education;
         const eduItems = [];
         for (const l of eduLines) {
           const lc = l.replace(/^[-*•●▪■\s]+/, '').trim();
-          if (/bachelor|master|doctor|bs|ba|college|university|secondary|degree|diploma|school/i.test(lc)) {
+          if (/bachelor|master|doctor|bs|ba|college|university|secondary|degree|diploma|school|alumnus/i.test(lc)) {
             let statusNote = '';
             if (/in progress|ongoing|candidate|expected|currently pursuing/i.test(lc)) {
               statusNote = ' [In Progress]';
@@ -321,7 +352,21 @@
           }
         }
         if (eduItems.length) {
-          bullets.push(`- **Education**: ${eduItems.slice(0, 2).join('; ')}.`);
+          bullets.push(`- **Education & Background**: ${eduItems.slice(0, 2).join('; ')}.`);
+        }
+      }
+
+      // Narrative education search
+      if (!bullets.some(b => b.includes('Education'))) {
+        for (const l of lines) {
+          if (/\b(alumnus|alumna|graduated from|bachelor|master|degree in|college|university)\b/i.test(l)) {
+            let bClean = l.replace(/^[-*•●▪■\s]+/, '').trim();
+            if (!/\b(president|director|subject|dear)\b/i.test(bClean)) {
+              if (bClean.length > 180) bClean = bClean.substring(0, 177).replace(/\s+\S*$/, '') + '...';
+              bullets.push(`- **Education & Credentials**: ${bClean.replace(/\.+$/, '')}.`);
+              break;
+            }
+          }
         }
       }
 
@@ -339,7 +384,21 @@
         }
       }
 
-      // 6. Notable Achievements / Projects (1 bullet)
+      // 6. Technical Skills / Automation / AI
+      if (!bullets.some(b => b.includes('Skills'))) {
+        for (const l of lines) {
+          if (/\b(python|apps script|ai|gemini|chatgpt|openai|automation|programming|excel|sql)\b/i.test(l)) {
+            let bClean = l.replace(/^[-*•●▪■\s]+/, '').trim();
+            if (!bullets.some(b => b.toLowerCase().includes(bClean.substring(0, 25).toLowerCase()))) {
+              if (bClean.length > 200) bClean = bClean.substring(0, 197).replace(/\s+\S*$/, '') + '...';
+              bullets.push(`- **Technical & Automation Proficiencies**: ${bClean.replace(/\.+$/, '')}.`);
+              break;
+            }
+          }
+        }
+      }
+
+      // 7. Notable Achievements / Projects (1 bullet)
       if (sections.achievements && sections.achievements.length) {
         const achLines = sections.achievements;
         const achItems = [];
@@ -353,15 +412,30 @@
         }
       }
 
+      // Narrative projects search
+      if (!bullets.some(b => b.includes('Achievements') || b.includes('Project'))) {
+        for (const l of lines) {
+          if (/\b(project\s+[a-z0-9]+|developed|initiative|automated|knowledge hub)\b/i.test(l)) {
+            let bClean = l.replace(/^[-*•●▪■\s]+/, '').trim();
+            if (!bullets.some(b => b.toLowerCase().includes(bClean.substring(0, 25).toLowerCase())) && !/\b(president|director|subject|dear|http)\b/i.test(bClean)) {
+              if (bClean.length > 200) bClean = bClean.substring(0, 197).replace(/\s+\S*$/, '') + '...';
+              bullets.push(`- **Key Project / Initiative**: ${bClean.replace(/\.+$/, '')}.`);
+              if (bullets.length >= 6) break;
+            }
+          }
+        }
+      }
+
       // Fallback if under 5 bullets
       if (bullets.length < 5) {
         for (const l of lines) {
-          if (l.length > 30 && !l.startsWith('#')) {
-            const bClean = l.replace(/^[-*•●▪■\s]+/, '').trim();
-            if (/\b(email|phone|linkedin|http|tel|mobile|github)\b/i.test(bClean)) continue;
+          if (l.length > 35 && !l.startsWith('#') && !l.startsWith('http')) {
+            let bClean = l.replace(/^[-*•●▪■\s]+/, '').trim();
+            if (/\b(email|phone|linkedin|tel|mobile|github|dear|sincerely|respectfully|thank you)\b/i.test(bClean)) continue;
             if (bullets.some(b => b.toLowerCase().includes(bClean.substring(0, 25).toLowerCase()))) continue;
-            bullets.push(`- **Key Detail**: ${bClean}`);
-            if (bullets.length >= 5) break;
+            if (bClean.length > 200) bClean = bClean.substring(0, 197).replace(/\s+\S*$/, '') + '...';
+            bullets.push(`- **Operational Detail**: ${bClean.replace(/\.+$/, '')}.`);
+            if (bullets.length >= 6) break;
           }
         }
       }
@@ -393,11 +467,9 @@
         return;
       }
 
-      // Merge with full table record if available to ensure we have Resume and Name
       const fullRecord = allRecords.find(r => r.id === record.id) || record;
       currentRecord = { ...record, ...fullRecord };
 
-      // Sync select dropdown
       if (selectEl.value !== String(currentRecord.id)) {
         selectEl.value = String(currentRecord.id);
       }
@@ -414,20 +486,22 @@
 
       const attId = getAttachmentId(currentRecord.Resume);
       if (attId) {
-        attIndicatorEl.textContent = `📄 PDF Attachment #${attId}`;
+        attIndicatorEl.textContent = `📎 Document Attached (#${attId})`;
         noResumeAlert.style.display = 'none';
         btnExtract.disabled = false;
         btnLabel.textContent = 'Extract & Summarize Resume';
       } else {
-        attIndicatorEl.textContent = '❌ No PDF file';
+        attIndicatorEl.textContent = '❌ No Resume Attached';
         noResumeAlert.style.display = 'block';
         btnExtract.disabled = true;
-        btnLabel.textContent = 'Upload PDF Resume First';
+        btnLabel.textContent = 'Upload Resume First';
       }
     }
 
     function populateDropdown(records) {
-      allRecords = records || [];
+      if (Array.isArray(records) && records.length) {
+        allRecords = records;
+      }
       const currentSelectedId = currentRecord ? currentRecord.id : null;
       selectEl.innerHTML = '';
 
@@ -439,8 +513,8 @@
       for (const rec of allRecords) {
         const opt = document.createElement('option');
         opt.value = String(rec.id);
-        const hasPdf = Boolean(getAttachmentId(rec.Resume));
-        const icon = hasPdf ? '📄' : '⚠️';
+        const hasAtt = Boolean(getAttachmentId(rec.Resume));
+        const icon = hasAtt ? '📄' : '⚠️';
         const name = rec.Name || `Row ${rec.id}`;
         opt.textContent = `${icon} ${name} (Row ${rec.id})`;
         selectEl.appendChild(opt);
@@ -451,29 +525,61 @@
         const cur = allRecords.find(r => r.id === currentSelectedId);
         if (cur) updateCandidateUI(cur);
       } else {
-        // Default to first record
         updateCandidateUI(allRecords[0]);
       }
     }
 
     async function refreshAllRecords() {
       try {
-        const table = await grist.docApi.fetchTable('Recruitment');
-        const records = [];
-        for (let i = 0; i < table.id.length; i++) {
-          records.push({
-            id: table.id[i],
-            Name: table.Name ? table.Name[i] : '',
-            Resume: table.Resume ? table.Resume[i] : null,
-            Resume_Text: table.Resume_Text ? table.Resume_Text[i] : '',
-            Resume_Summary: table.Resume_Summary ? table.Resume_Summary[i] : '',
-            Resume_Status: table.Resume_Status ? table.Resume_Status[i] : '',
-            Processed_Attachment_ID: table.Processed_Attachment_ID ? table.Processed_Attachment_ID[i] : null
-          });
+        let records = [];
+
+        // 1. Try fetchSelectedTable with includeColumns: 'all'
+        try {
+          const data = await grist.fetchSelectedTable({ includeColumns: 'all' });
+          if (Array.isArray(data) && data.length) {
+            records = data;
+          } else if (data && data.id) {
+            for (let i = 0; i < data.id.length; i++) {
+              const row = {};
+              for (const col of Object.keys(data)) {
+                row[col] = data[col][i];
+              }
+              records.push(row);
+            }
+          }
+        } catch (e1) {
+          console.warn('fetchSelectedTable failed, attempting fetchTable fallback:', e1);
         }
-        populateDropdown(records);
+
+        // 2. Fallback to docApi.fetchTable('Recruitment')
+        if (!records.length) {
+          try {
+            const table = await grist.docApi.fetchTable('Recruitment');
+            if (table && table.id) {
+              for (let i = 0; i < table.id.length; i++) {
+                records.push({
+                  id: table.id[i],
+                  Name: table.Name ? table.Name[i] : '',
+                  Resume: table.Resume ? table.Resume[i] : null,
+                  Resume_Text: table.Resume_Text ? table.Resume_Text[i] : '',
+                  Resume_Summary: table.Resume_Summary ? table.Resume_Summary[i] : '',
+                  Resume_Status: table.Resume_Status ? table.Resume_Status[i] : '',
+                  Processed_Attachment_ID: table.Processed_Attachment_ID ? table.Processed_Attachment_ID[i] : null
+                });
+              }
+            }
+          } catch (e2) {
+            console.warn('fetchTable fallback failed:', e2);
+          }
+        }
+
+        if (records.length) {
+          populateDropdown(records);
+        } else if (!allRecords.length) {
+          selectEl.innerHTML = '<option value="">⚠️ Click "Select all" in VISIBLE COLUMNS</option>';
+        }
       } catch (err) {
-        console.warn('refreshAllRecords error:', err);
+        console.error('refreshAllRecords error:', err);
       }
     }
 
@@ -485,45 +591,77 @@
       }
     });
 
-    async function extractPdfFromAttachment(attachmentId) {
+    async function extractTextFromAttachment(attachmentId) {
       const { token, baseUrl } = await grist.docApi.getAccessToken({ readOnly: true });
       const downloadUrl = `${baseUrl}/attachments/${attachmentId}/download?auth=${token}`;
       const resp = await fetch(downloadUrl);
       if (!resp.ok) throw new Error('Failed to download attachment');
       const buffer = await resp.arrayBuffer();
 
-      const loadingTask = pdfjsLib.getDocument({ data: buffer });
-      const pdf = await loadingTask.promise;
-      let text = '';
-      for (let i = 1; i <= pdf.numPages; i++) {
-        logStatus(`Reading page ${i} of ${pdf.numPages}...`, 'info');
-        const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        const pageText = content.items.map(it => it.str).join(' ');
-        text += pageText + '\n';
+      const bytes = new Uint8Array(buffer.slice(0, 4));
+      const isPdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
+      const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04; // PK.. (DOCX)
+      const isDoc = bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0; // Legacy DOC
+
+      if (isPdf) {
+        logStatus('Reading PDF document...', 'info');
+        const loadingTask = pdfjsLib.getDocument({ data: buffer });
+        const pdf = await loadingTask.promise;
+        let text = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          logStatus(`Reading page ${i} of ${pdf.numPages}...`, 'info');
+          const page = await pdf.getPage(i);
+          const content = await page.getTextContent();
+          const pageText = content.items.map(it => it.str).join(' ');
+          text += pageText + '\n';
+        }
+        return cleanText(text);
+      } else if (isZip) {
+        logStatus('Extracting Word (.docx) document...', 'info');
+        if (typeof mammoth === 'undefined') {
+          throw new Error('Mammoth.js document parser failed to load.');
+        }
+        const res = await mammoth.extractRawText({ arrayBuffer: buffer });
+        return cleanText(res.value);
+      } else if (isDoc) {
+        throw new Error('Legacy .doc binary format detected. Please save and upload as .docx or .pdf.');
+      } else {
+        // Fallback: try PDF parser
+        try {
+          const loadingTask = pdfjsLib.getDocument({ data: buffer });
+          const pdf = await loadingTask.promise;
+          let text = '';
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            text += content.items.map(it => it.str).join(' ') + '\n';
+          }
+          return cleanText(text);
+        } catch (e) {
+          throw new Error('Unsupported format. Please upload a PDF (.pdf) or Word document (.docx).');
+        }
       }
-      return cleanText(text);
     }
 
     async function processRecord(rec) {
       const attId = getAttachmentId(rec.Resume);
       if (!attId) {
-        logStatus('No PDF resume attached to this candidate.', 'warning');
+        logStatus('No resume attached to this candidate.', 'warning');
         return false;
       }
 
-      logStatus('Downloading PDF attachment...', 'info');
-      const extractedText = await extractPdfFromAttachment(attId);
+      logStatus('Downloading attachment...', 'info');
+      const extractedText = await extractTextFromAttachment(attId);
       const nonWhitespace = extractedText.replace(/\s+/g, '');
 
       if (nonWhitespace.length < 80) {
-        logStatus('Scanned or image-only PDF detected (OCR required).', 'warning');
+        logStatus('Scanned or image-only document detected (OCR required).', 'warning');
         await grist.docApi.applyUserActions([
           ['UpdateRecord', 'Recruitment', rec.id, {
             Resume_Status: 'Scanned (OCR Needed)',
             Processed_Attachment_ID: attId,
             Resume_Text: '',
-            Resume_Summary: '- **Status**: Scanned or image-only PDF detected. Selectable text unavailable (OCR required).'
+            Resume_Summary: '- **Status**: Scanned or image-only document detected. Selectable text unavailable (OCR required).'
           }]
         ]);
         await refreshAllRecords();
@@ -622,26 +760,37 @@
       }
     });
 
-    // 1. Attach event handlers first
+    // 1. Attach event handlers with includeColumns: 'all'
     grist.onRecords((records) => {
+      if (Array.isArray(records) && records.length) {
+        populateDropdown(records);
+      }
       refreshAllRecords();
-    });
+    }, { includeColumns: 'all' });
 
     grist.onRecord(async (record) => {
       if (record) {
-        if (!allRecords.length) {
-          await refreshAllRecords();
-        }
         const full = allRecords.find(r => r.id === record.id) || record;
         updateCandidateUI(full);
       }
+    }, { includeColumns: 'all' });
+
+    // 2. Call grist.ready declaring required columns
+    grist.ready({
+      requiredAccess: 'full',
+      columns: [
+        { name: 'Name', title: 'Name', optional: true },
+        { name: 'Resume', title: 'Resume', optional: true },
+        { name: 'Resume_Text', title: 'Resume_Text', optional: true },
+        { name: 'Resume_Summary', title: 'Resume Summary', optional: true },
+        { name: 'Resume_Status', title: 'Resume Status', optional: true },
+        { name: 'Processed_Attachment_ID', title: 'Processed Attachment ID', optional: true },
+        { name: 'Status', title: 'Status', optional: true }
+      ]
     });
 
-    // 2. Call grist.ready
-    grist.ready({ requiredAccess: 'full' });
-
-    // 3. Immediately fetch full table records on startup
-    refreshAllRecords();
+    // 3. Trigger initial fetch
+    setTimeout(refreshAllRecords, 200);
   </script>
 </body>
 </html>
