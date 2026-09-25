@@ -382,8 +382,8 @@
     }
 
     function updateCandidateUI(record) {
-      currentRecord = record;
       if (!record) {
+        currentRecord = null;
         statusEl.textContent = 'No Candidate Selected';
         statusEl.className = 'badge badge-pending';
         attIndicatorEl.textContent = '';
@@ -393,12 +393,16 @@
         return;
       }
 
+      // Merge with full table record if available to ensure we have Resume and Name
+      const fullRecord = allRecords.find(r => r.id === record.id) || record;
+      currentRecord = { ...record, ...fullRecord };
+
       // Sync select dropdown
-      if (selectEl.value !== String(record.id)) {
-        selectEl.value = String(record.id);
+      if (selectEl.value !== String(currentRecord.id)) {
+        selectEl.value = String(currentRecord.id);
       }
 
-      const status = record.Resume_Status || (record.Resume_Text ? 'Ready' : 'Pending');
+      const status = currentRecord.Resume_Status || (currentRecord.Resume_Text ? 'Ready' : 'Pending');
       statusEl.textContent = status;
       if (status === 'Ready') {
         statusEl.className = 'badge badge-ready';
@@ -408,7 +412,7 @@
         statusEl.className = 'badge badge-pending';
       }
 
-      const attId = getAttachmentId(record.Resume);
+      const attId = getAttachmentId(currentRecord.Resume);
       if (attId) {
         attIndicatorEl.textContent = `📄 PDF Attachment #${attId}`;
         noResumeAlert.style.display = 'none';
@@ -444,9 +448,32 @@
 
       if (currentSelectedId) {
         selectEl.value = String(currentSelectedId);
+        const cur = allRecords.find(r => r.id === currentSelectedId);
+        if (cur) updateCandidateUI(cur);
       } else {
         // Default to first record
         updateCandidateUI(allRecords[0]);
+      }
+    }
+
+    async function refreshAllRecords() {
+      try {
+        const table = await grist.docApi.fetchTable('Recruitment');
+        const records = [];
+        for (let i = 0; i < table.id.length; i++) {
+          records.push({
+            id: table.id[i],
+            Name: table.Name ? table.Name[i] : '',
+            Resume: table.Resume ? table.Resume[i] : null,
+            Resume_Text: table.Resume_Text ? table.Resume_Text[i] : '',
+            Resume_Summary: table.Resume_Summary ? table.Resume_Summary[i] : '',
+            Resume_Status: table.Resume_Status ? table.Resume_Status[i] : '',
+            Processed_Attachment_ID: table.Processed_Attachment_ID ? table.Processed_Attachment_ID[i] : null
+          });
+        }
+        populateDropdown(records);
+      } catch (err) {
+        console.warn('refreshAllRecords error:', err);
       }
     }
 
@@ -499,6 +526,7 @@
             Resume_Summary: '- **Status**: Scanned or image-only PDF detected. Selectable text unavailable (OCR required).'
           }]
         ]);
+        await refreshAllRecords();
         return true;
       }
 
@@ -527,6 +555,7 @@
         throw new Error('Verification failed: Resume_Summary is still empty. Ensure column is a writable Data column.');
       }
 
+      await refreshAllRecords();
       return true;
     }
 
@@ -582,6 +611,7 @@
           await processRecord(rowObj);
           processed++;
         }
+        await refreshAllRecords();
         logStatus(`All done! Processed and verified ${processed} candidate resume(s).`, 'success');
       } catch (err) {
         console.error(err);
@@ -594,41 +624,24 @@
 
     // 1. Attach event handlers first
     grist.onRecords((records) => {
-      populateDropdown(records);
+      refreshAllRecords();
     });
 
-    grist.onRecord((record) => {
+    grist.onRecord(async (record) => {
       if (record) {
-        updateCandidateUI(record);
+        if (!allRecords.length) {
+          await refreshAllRecords();
+        }
+        const full = allRecords.find(r => r.id === record.id) || record;
+        updateCandidateUI(full);
       }
     });
 
     // 2. Call grist.ready
     grist.ready({ requiredAccess: 'full' });
 
-    // Fallback: fetch table data directly if onRecords doesn't fire immediately
-    setTimeout(async () => {
-      if (!allRecords.length) {
-        try {
-          const table = await grist.docApi.fetchTable('Recruitment');
-          const records = [];
-          for (let i = 0; i < table.id.length; i++) {
-            records.push({
-              id: table.id[i],
-              Name: table.Name ? table.Name[i] : '',
-              Resume: table.Resume ? table.Resume[i] : null,
-              Resume_Text: table.Resume_Text ? table.Resume_Text[i] : '',
-              Resume_Summary: table.Resume_Summary ? table.Resume_Summary[i] : '',
-              Resume_Status: table.Resume_Status ? table.Resume_Status[i] : '',
-              Processed_Attachment_ID: table.Processed_Attachment_ID ? table.Processed_Attachment_ID[i] : null
-            });
-          }
-          populateDropdown(records);
-        } catch (e) {
-          console.warn('Fallback fetchTable notice:', e);
-        }
-      }
-    }, 500);
+    // 3. Immediately fetch full table records on startup
+    refreshAllRecords();
   </script>
 </body>
 </html>
