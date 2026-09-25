@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Grist Resume Summarizer Widget</title>
+  <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <style>
+    :root {
+      --primary: #16a34a;
+      --primary-hover: #15803d;
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --success-bg: #dcfce7;
+      --success-text: #166534;
+      --warn-bg: #fef9c3;
+      --warn-text: #854d0e;
+      --error-bg: #fee2e2;
+      --error-text: #991b1b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding: 12px; font-size: 13px; line-height: 1.4; }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .title { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+    .candidate-box { background: #f1f5f9; border-radius: 6px; padding: 10px; margin-bottom: 12px; }
+    .candidate-name { font-weight: 600; font-size: 14px; margin-bottom: 3px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+    .badge-ready { background: var(--success-bg); color: var(--success-text); }
+    .badge-pending { background: var(--warn-bg); color: var(--warn-text); }
+    .badge-error { background: var(--error-bg); color: var(--error-text); }
+    .actions { display: flex; flex-direction: column; gap: 8px; }
+    button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-weight: 500;
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: background 0.15s ease;
+      width: 100%;
+    }
+    button:hover:not(:disabled) { background: var(--primary-hover); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    button.secondary { background: #f1f5f9; color: var(--text); border: 1px solid var(--border); }
+    button.secondary:hover:not(:disabled) { background: #e2e8f0; }
+    .status-msg { margin-top: 10px; padding: 8px 10px; border-radius: 6px; font-size: 12px; min-height: 24px; word-break: break-word; }
+    .status-info { background: #e0f2fe; color: #075985; }
+    .status-success { background: var(--success-bg); color: var(--success-text); }
+    .status-warning { background: var(--warn-bg); color: var(--warn-text); }
+    .status-error { background: var(--error-bg); color: var(--error-text); }
+    .spinner { border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: white; width: 14px; height: 14px; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <div class="title"><span>📄</span> Resume Summarizer</div>
+    </div>
+
+    <div class="candidate-box">
+      <div id="candidate-name" class="candidate-name">Select a candidate row...</div>
+      <div id="candidate-status-wrap" style="margin-top: 4px;">
+        <span id="candidate-status" class="badge badge-pending">No Row Selected</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="btn-extract" disabled>
+        <span id="btn-spinner" class="spinner" style="display:none;"></span>
+        <span id="btn-icon">⚡</span>
+        <span id="btn-label">Extract Selected Resume</span>
+      </button>
+      <button id="btn-extract-all" class="secondary">
+        <span>🔄</span> Extract All Pending Resumes
+      </button>
+    </div>
+
+    <div id="status-area" class="status-msg status-info" style="display:none;"></div>
+  </div>
+
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    let currentRecord = null;
+    const nameEl = document.getElementById('candidate-name');
+    const statusEl = document.getElementById('candidate-status');
+    const btnExtract = document.getElementById('btn-extract');
+    const btnExtractAll = document.getElementById('btn-extract-all');
+    const btnSpinner = document.getElementById('btn-spinner');
+    const btnIcon = document.getElementById('btn-icon');
+    const btnLabel = document.getElementById('btn-label');
+    const statusArea = document.getElementById('status-area');
+
+    function logStatus(msg, type = 'info') {
+      statusArea.style.display = 'block';
+      statusArea.className = 'status-msg status-' + type;
+      statusArea.textContent = msg;
+    }
+
+    function cleanText(text) {
+      if (!text) return '';
+      text = text.replace(/\uf0b7/g, '- ').replace(/\u2022/g, '- ').replace(/\uf0a7/g, '- ');
+      text = text.replace(/\xa0/g, ' ').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const lines = text.split('\n').map(l => l.replace(/[ \t]+/g, ' ').trim());
+      const reconstructed = [];
+      let currentItem = [];
+
+      for (const line of lines) {
+        if (!line) {
+          if (currentItem.length) {
+            reconstructed.push(currentItem.join(' '));
+            currentItem = [];
+          }
+          reconstructed.push('');
+          continue;
+        }
+        const isBullet = /^[-*•●▪■]\s+/.test(line);
+        const isHeading = /^[A-Z\s]{4,35}$/.test(line);
+
+        if (isBullet || isHeading || !currentItem.length) {
+          if (currentItem.length) {
+            reconstructed.push(currentItem.join(' '));
+            currentItem = [];
+          }
+          currentItem.push(line);
+        } else {
+          currentItem.push(line);
+        }
+      }
+      if (currentItem.length) reconstructed.push(currentItem.join(' '));
+      return reconstructed.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    }
+
+    function getAttachmentId(val) {
+      if (!val) return null;
+      if (typeof val === 'number') return val;
+      if (Array.isArray(val)) {
+        const items = (val[0] === 'L') ? val.slice(1) : val;
+        if (items.length > 0 && typeof items[items.length - 1] === 'number') {
+          return items[items.length - 1];
+        }
+      }
+      return null;
+    }
+
+    async function extractPdfFromAttachment(attachmentId) {
+      const { token, baseUrl } = await grist.docApi.getAccessToken({ readOnly: true });
+      const downloadUrl = `${baseUrl}/attachments/${attachmentId}/download?auth=${token}`;
+      const resp = await fetch(downloadUrl);
+      if (!resp.ok) throw new Error('Failed to download attachment');
+      const buffer = await resp.arrayBuffer();
+
+      const loadingTask = pdfjsLib.getDocument({ data: buffer });
+      const pdf = await loadingTask.promise;
+      let text = '';
+      for (let i = 1; i <= pdf.numPages; i++) {
+        logStatus(`Reading page ${i} of ${pdf.numPages}...`, 'info');
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const pageText = content.items.map(it => it.str).join(' ');
+        text += pageText + '\n';
+      }
+      return cleanText(text);
+    }
+
+    async function processRecord(rec) {
+      const attId = getAttachmentId(rec.Resume);
+      if (!attId) {
+        logStatus('No PDF resume attached to this candidate.', 'warning');
+        return false;
+      }
+
+      logStatus('Downloading PDF attachment...', 'info');
+      const extractedText = await extractPdfFromAttachment(attId);
+      const nonWhitespace = extractedText.replace(/\s+/g, '');
+
+      if (nonWhitespace.length < 80) {
+        logStatus('Scanned or image-only PDF detected (OCR required).', 'warning');
+        await grist.docApi.applyUserActions([
+          ['UpdateRecord', 'Recruitment', rec.id, {
+            Resume_Status: 'Scanned (OCR Needed)',
+            Processed_Attachment_ID: attId,
+            Resume_Text: ''
+          }]
+        ]);
+        return true;
+      }
+
+      logStatus('Updating Grist table...', 'info');
+      await grist.docApi.applyUserActions([
+        ['UpdateRecord', 'Recruitment', rec.id, {
+          Resume_Text: extractedText,
+          Processed_Attachment_ID: attId,
+          Resume_Status: 'Ready'
+        }]
+      ]);
+      return true;
+    }
+
+    btnExtract.addEventListener('click', async () => {
+      if (!currentRecord) return;
+      btnExtract.disabled = true;
+      btnSpinner.style.display = 'inline-block';
+      btnIcon.style.display = 'none';
+      btnLabel.textContent = 'Extracting...';
+
+      try {
+        const ok = await processRecord(currentRecord);
+        if (ok) {
+          logStatus('Done! Resume extracted and summary updated.', 'success');
+        }
+      } catch (err) {
+        console.error(err);
+        logStatus('Error: ' + err.message, 'error');
+      } finally {
+        btnExtract.disabled = false;
+        btnSpinner.style.display = 'none';
+        btnIcon.style.display = 'inline';
+        btnLabel.textContent = 'Extract Selected Resume';
+      }
+    });
+
+    btnExtractAll.addEventListener('click', async () => {
+      btnExtractAll.disabled = true;
+      btnExtract.disabled = true;
+      try {
+        logStatus('Scanning table records...', 'info');
+        const table = await grist.docApi.fetchTable('Recruitment');
+        const count = table.id.length;
+        let processed = 0;
+
+        for (let i = 0; i < count; i++) {
+          const rowId = table.id[i];
+          const name = table.Name ? table.Name[i] : `Row ${rowId}`;
+          const resume = table.Resume[i];
+          const attId = getAttachmentId(resume);
+          const processedId = table.Processed_Attachment_ID ? table.Processed_Attachment_ID[i] : null;
+          const status = table.Resume_Status ? table.Resume_Status[i] : '';
+          const text = table.Resume_Text ? table.Resume_Text[i] : '';
+
+          if (!attId) continue;
+          if (processedId === attId && status === 'Ready' && text) continue;
+
+          logStatus(`Processing ${name}...`, 'info');
+          const rowObj = { id: rowId, Resume: resume, Name: name };
+          await processRecord(rowObj);
+          processed++;
+        }
+        logStatus(`All done! Processed ${processed} candidate resume(s).`, 'success');
+      } catch (err) {
+        console.error(err);
+        logStatus('Batch error: ' + err.message, 'error');
+      } finally {
+        btnExtractAll.disabled = false;
+        btnExtract.disabled = !currentRecord || !getAttachmentId(currentRecord.Resume);
+      }
+    });
+
+    grist.ready({ requiredAccess: 'full' });
+
+    grist.onRecord((record) => {
+      currentRecord = record;
+      if (!record) {
+        nameEl.textContent = 'Select a candidate row...';
+        statusEl.textContent = 'No Row Selected';
+        statusEl.className = 'badge badge-pending';
+        btnExtract.disabled = true;
+        return;
+      }
+
+      nameEl.textContent = record.Name || `Candidate #${record.id}`;
+      const status = record.Resume_Status || (record.Resume_Text ? 'Ready' : 'Pending');
+      statusEl.textContent = status;
+      if (status === 'Ready') {
+        statusEl.className = 'badge badge-ready';
+      } else if (status.includes('Failed') || status.includes('Scanned')) {
+        statusEl.className = 'badge badge-error';
+      } else {
+        statusEl.className = 'badge badge-pending';
+      }
+
+      const hasResume = Boolean(getAttachmentId(record.Resume));
+      btnExtract.disabled = !hasResume;
+    });
+  </script>
+</body>
+</html>
