@@ -14,7 +14,7 @@
       --card-bg: #ffffff;
       --text: #0f172a;
       --text-muted: #64748b;
-      --border: #e2e8f0;
+      --border: #cbd5e1;
       --success-bg: #dcfce7;
       --success-text: #166534;
       --warn-bg: #fef9c3;
@@ -27,12 +27,38 @@
     .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
     .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
     .title { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 6px; }
-    .candidate-box { background: #f1f5f9; border-radius: 6px; padding: 10px; margin-bottom: 12px; }
-    .candidate-name { font-weight: 600; font-size: 14px; margin-bottom: 3px; }
+    .candidate-box { background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px; margin-bottom: 12px; }
+    .dropdown-label { font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+    select {
+      width: 100%;
+      padding: 7px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 500;
+      background: white;
+      color: var(--text);
+      cursor: pointer;
+      outline: none;
+      margin-bottom: 8px;
+    }
+    select:focus { border-color: var(--primary); ring: 2px solid #86efac; }
+    .candidate-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
     .badge-ready { background: var(--success-bg); color: var(--success-text); }
     .badge-pending { background: var(--warn-bg); color: var(--warn-text); }
     .badge-error { background: var(--error-bg); color: var(--error-text); }
+    .att-indicator { font-size: 11px; font-weight: 500; color: var(--text-muted); }
+    .warning-box {
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: #fffbeb;
+      border: 1px solid #fde047;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #92400e;
+      line-height: 1.35;
+    }
     .actions { display: flex; flex-direction: column; gap: 8px; }
     button {
       background: var(--primary);
@@ -47,12 +73,12 @@
       align-items: center;
       justify-content: center;
       gap: 6px;
-      transition: background 0.15s ease;
+      transition: background 0.15s ease, opacity 0.15s ease;
       width: 100%;
     }
     button:hover:not(:disabled) { background: var(--primary-hover); }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    button.secondary { background: #f1f5f9; color: var(--text); border: 1px solid var(--border); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary { background: #f8fafc; color: var(--text); border: 1px solid var(--border); }
     button.secondary:hover:not(:disabled) { background: #e2e8f0; }
     .status-msg { margin-top: 10px; padding: 8px 10px; border-radius: 6px; font-size: 12px; min-height: 24px; word-break: break-word; }
     .status-info { background: #e0f2fe; color: #075985; }
@@ -61,6 +87,7 @@
     .status-error { background: var(--error-bg); color: var(--error-text); }
     .spinner { border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: white; width: 14px; height: 14px; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .tip-box { font-size: 11px; color: var(--text-muted); margin-top: 10px; line-height: 1.3; }
   </style>
 </head>
 <body>
@@ -70,9 +97,19 @@
     </div>
 
     <div class="candidate-box">
-      <div id="candidate-name" class="candidate-name">Select a candidate row...</div>
-      <div id="candidate-status-wrap" style="margin-top: 4px;">
-        <span id="candidate-status" class="badge badge-pending">No Row Selected</span>
+      <label class="dropdown-label" for="candidate-select">Selected Candidate</label>
+      <select id="candidate-select">
+        <option value="">Loading candidate records...</option>
+      </select>
+
+      <div class="candidate-meta">
+        <span id="candidate-status" class="badge badge-pending">Loading...</span>
+        <span id="att-indicator" class="att-indicator">Checking resume...</span>
+      </div>
+
+      <div id="no-resume-alert" class="warning-box" style="display:none;">
+        ⚠️ <strong>No PDF resume uploaded yet.</strong><br/>
+        Please double-click the <em>Resume</em> cell for this candidate in the table to upload a PDF file.
       </div>
     </div>
 
@@ -88,14 +125,21 @@
     </div>
 
     <div id="status-area" class="status-msg status-info" style="display:none;"></div>
+
+    <div class="tip-box">
+      💡 <strong>Tip:</strong> You can select candidates from the dropdown above, or click rows directly in Grist once cursor linking is active.
+    </div>
   </div>
 
   <script>
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
     let currentRecord = null;
-    const nameEl = document.getElementById('candidate-name');
+    let allRecords = [];
+    const selectEl = document.getElementById('candidate-select');
     const statusEl = document.getElementById('candidate-status');
+    const attIndicatorEl = document.getElementById('att-indicator');
+    const noResumeAlert = document.getElementById('no-resume-alert');
     const btnExtract = document.getElementById('btn-extract');
     const btnExtractAll = document.getElementById('btn-extract-all');
     const btnSpinner = document.getElementById('btn-spinner');
@@ -219,7 +263,7 @@
 
           if (isHeading) {
             if (currentRole && (currentRole.title || currentRole.bullets.length)) {
-              roles.append ? roles.append(currentRole) : roles.push(currentRole);
+              roles.push(currentRole);
             }
             currentRole = { title: l, date: dMatch ? dMatch[0] : '', bullets: [] };
           } else if (currentRole) {
@@ -337,6 +381,83 @@
       return null;
     }
 
+    function updateCandidateUI(record) {
+      currentRecord = record;
+      if (!record) {
+        statusEl.textContent = 'No Candidate Selected';
+        statusEl.className = 'badge badge-pending';
+        attIndicatorEl.textContent = '';
+        noResumeAlert.style.display = 'none';
+        btnExtract.disabled = true;
+        btnLabel.textContent = 'Select Candidate to Extract';
+        return;
+      }
+
+      // Sync select dropdown
+      if (selectEl.value !== String(record.id)) {
+        selectEl.value = String(record.id);
+      }
+
+      const status = record.Resume_Status || (record.Resume_Text ? 'Ready' : 'Pending');
+      statusEl.textContent = status;
+      if (status === 'Ready') {
+        statusEl.className = 'badge badge-ready';
+      } else if (status.includes('Failed') || status.includes('Scanned')) {
+        statusEl.className = 'badge badge-error';
+      } else {
+        statusEl.className = 'badge badge-pending';
+      }
+
+      const attId = getAttachmentId(record.Resume);
+      if (attId) {
+        attIndicatorEl.textContent = `📄 PDF Attachment #${attId}`;
+        noResumeAlert.style.display = 'none';
+        btnExtract.disabled = false;
+        btnLabel.textContent = 'Extract & Summarize Resume';
+      } else {
+        attIndicatorEl.textContent = '❌ No PDF file';
+        noResumeAlert.style.display = 'block';
+        btnExtract.disabled = true;
+        btnLabel.textContent = 'Upload PDF Resume First';
+      }
+    }
+
+    function populateDropdown(records) {
+      allRecords = records || [];
+      const currentSelectedId = currentRecord ? currentRecord.id : null;
+      selectEl.innerHTML = '';
+
+      if (!allRecords.length) {
+        selectEl.innerHTML = '<option value="">No candidates found in table</option>';
+        return;
+      }
+
+      for (const rec of allRecords) {
+        const opt = document.createElement('option');
+        opt.value = String(rec.id);
+        const hasPdf = Boolean(getAttachmentId(rec.Resume));
+        const icon = hasPdf ? '📄' : '⚠️';
+        const name = rec.Name || `Row ${rec.id}`;
+        opt.textContent = `${icon} ${name} (Row ${rec.id})`;
+        selectEl.appendChild(opt);
+      }
+
+      if (currentSelectedId) {
+        selectEl.value = String(currentSelectedId);
+      } else {
+        // Default to first record
+        updateCandidateUI(allRecords[0]);
+      }
+    }
+
+    selectEl.addEventListener('change', () => {
+      const selectedId = Number(selectEl.value);
+      const found = allRecords.find(r => r.id === selectedId);
+      if (found) {
+        updateCandidateUI(found);
+      }
+    });
+
     async function extractPdfFromAttachment(attachmentId) {
       const { token, baseUrl } = await grist.docApi.getAccessToken({ readOnly: true });
       const downloadUrl = `${baseUrl}/attachments/${attachmentId}/download?auth=${token}`;
@@ -394,7 +515,7 @@
         }]
       ]);
 
-      // CRITICAL VERIFICATION: Verify the record in Grist actually contains the summary before returning success
+      // Verification check
       logStatus('Verifying saved summary in Grist...', 'info');
       const tableData = await grist.docApi.fetchTable('Recruitment');
       const rowIdx = tableData.id.indexOf(rec.id);
@@ -471,32 +592,43 @@
       }
     });
 
-    grist.ready({ requiredAccess: 'full' });
+    // 1. Attach event handlers first
+    grist.onRecords((records) => {
+      populateDropdown(records);
+    });
 
     grist.onRecord((record) => {
-      currentRecord = record;
-      if (!record) {
-        nameEl.textContent = 'Select a candidate row...';
-        statusEl.textContent = 'No Row Selected';
-        statusEl.className = 'badge badge-pending';
-        btnExtract.disabled = true;
-        return;
+      if (record) {
+        updateCandidateUI(record);
       }
-
-      nameEl.textContent = record.Name || `Candidate #${record.id}`;
-      const status = record.Resume_Status || (record.Resume_Text ? 'Ready' : 'Pending');
-      statusEl.textContent = status;
-      if (status === 'Ready') {
-        statusEl.className = 'badge badge-ready';
-      } else if (status.includes('Failed') || status.includes('Scanned')) {
-        statusEl.className = 'badge badge-error';
-      } else {
-        statusEl.className = 'badge badge-pending';
-      }
-
-      const hasResume = Boolean(getAttachmentId(record.Resume));
-      btnExtract.disabled = !hasResume;
     });
+
+    // 2. Call grist.ready
+    grist.ready({ requiredAccess: 'full' });
+
+    // Fallback: fetch table data directly if onRecords doesn't fire immediately
+    setTimeout(async () => {
+      if (!allRecords.length) {
+        try {
+          const table = await grist.docApi.fetchTable('Recruitment');
+          const records = [];
+          for (let i = 0; i < table.id.length; i++) {
+            records.push({
+              id: table.id[i],
+              Name: table.Name ? table.Name[i] : '',
+              Resume: table.Resume ? table.Resume[i] : null,
+              Resume_Text: table.Resume_Text ? table.Resume_Text[i] : '',
+              Resume_Summary: table.Resume_Summary ? table.Resume_Summary[i] : '',
+              Resume_Status: table.Resume_Status ? table.Resume_Status[i] : '',
+              Processed_Attachment_ID: table.Processed_Attachment_ID ? table.Processed_Attachment_ID[i] : null
+            });
+          }
+          populateDropdown(records);
+        } catch (e) {
+          console.warn('Fallback fetchTable notice:', e);
+        }
+      }
+    }, 500);
   </script>
 </body>
 </html>
